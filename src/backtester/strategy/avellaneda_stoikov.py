@@ -43,7 +43,7 @@ class Quote:
 
 
 class VolatilityEstimator:
-    """Rolling volatility estimator using standard deviation of log returns."""
+    """Rolling volatility estimator using variance rate (square root of variance)."""
 
     def __init__(self, window_size: int) -> None:
         self._window_size = window_size
@@ -59,7 +59,7 @@ class VolatilityEstimator:
         """
         Estimate annualized volatility from rolling window.
 
-        Returns standard deviation of log returns, annualized.
+        Returns variance rate (sqrt of variance), annualized.
         Returns None if insufficient data.
         """
         if len(self._prices) < 2:
@@ -68,26 +68,29 @@ class VolatilityEstimator:
         prices = list(self._prices)
         timestamps = list(self._timestamps)
 
-        log_returns = []
+        # Calculate price changes (not log returns)
+        price_changes = []
         for i in range(1, len(prices)):
-            if prices[i - 1] > 0 and prices[i] > 0:
-                log_ret = math.log(prices[i] / prices[i - 1])
-                log_returns.append(log_ret)
+            if prices[i - 1] > 0:
+                change = (prices[i] - prices[i - 1]) / prices[i - 1]
+                price_changes.append(change)
 
-        if len(log_returns) < 2:
+        if len(price_changes) < 2:
             return None
 
-        mean_ret = sum(log_returns) / len(log_returns)
-        variance = sum((r - mean_ret) ** 2 for r in log_returns) / (len(log_returns) - 1)
-        std_ret = math.sqrt(variance)
+        # Variance rate: sqrt of variance of price changes
+        mean_change = sum(price_changes) / len(price_changes)
+        variance = sum((r - mean_change) ** 2 for r in price_changes) / (len(price_changes) - 1)
+        vol = math.sqrt(variance)
 
+        # Annualize based on time span
         if len(timestamps) >= 2 and timestamps[-1] > timestamps[0]:
             time_span_seconds = (timestamps[-1] - timestamps[0]) / 1_000_000
             if time_span_seconds > 0:
-                observations_per_year = (365 * 24 * 3600) / time_span_seconds
-                std_ret *= math.sqrt(observations_per_year)
+                seconds_per_year = 365 * 24 * 3600
+                vol *= math.sqrt(seconds_per_year / time_span_seconds)
 
-        return std_ret
+        return vol
 
 
 class QuoteCalculator:
@@ -268,8 +271,13 @@ class AvellanedaStoikovStrategy(Strategy):
         if mid_price is None:
             return []
 
-        self._vol_estimator.update(mid_price, snapshot.timestamp_us)
-        self._last_mid_price = mid_price
+        # Calculate microprice (volume-weighted mid price)
+        bid_vol = snapshot.bid_amount / SCALE
+        ask_vol = snapshot.ask_amount / SCALE
+        microprice = (best_bid * ask_vol + best_ask * bid_vol) / (bid_vol + ask_vol) if (bid_vol + ask_vol) > 0 else mid_price
+
+        self._vol_estimator.update(microprice, snapshot.timestamp_us)
+        self._last_mid_price = microprice
         self._last_timestamp = snapshot.timestamp_us
 
         volatility = self._vol_estimator.volatility()
@@ -280,7 +288,7 @@ class AvellanedaStoikovStrategy(Strategy):
         inventory = self._inventory.token_balance
 
         bid_float, ask_float = self._quote_calc.compute_quotes(
-            mid_price=mid_price,
+            mid_price=microprice,
             inventory=inventory,
             volatility=volatility,
             tau=tau,
@@ -326,7 +334,7 @@ class AvellanedaStoikovStrategy(Strategy):
         ))
 
         self._orders_placed = True
-        self._placement_mid_price = mid_price
+        self._placement_mid_price = microprice
 
         return intents
 

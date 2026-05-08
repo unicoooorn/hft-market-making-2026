@@ -248,11 +248,11 @@ def main() -> None:
         trades_rows=30_000_000,
     )
 
-    gamma_values = [0.003, 0.005, 0.007]
-    k_values = [50_000_000]
-    order_volume_values = [50 * 1e8]
+    gamma_values = [0.007]
+    k_values = [50_000_000, 500_000_000, 5_000_000_000]
+    order_volume_values = [50 * 1e8, 500 * 1e8, 1000 * 1e8, 2000 * 1e8]
     cancellation_threshold_values = [0.1]
-    horizon_seconds_values = [10, 15, 23, 27]
+    horizon_seconds_values = [27]
 
     results = grid_search(
         lob_path=lob_subset,
