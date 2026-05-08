@@ -55,6 +55,8 @@ New quotes immediately placed after cancellation.
 
 ## Avellaneda-Stoikov Performance Analysis
 
+![alt text](image-1.png)
+
 ### Grid Search Results
 
 **Dataset:** 2M LOB, 30M trades (end of dataset)
