@@ -1,7 +1,27 @@
 [project]
 name = "backtester"
 version = "0.1.0"
-description = "Add your description here"
+description = "Backtesting system for HFT strategies"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = [
+    "pyyaml>=6.0",
+    "tqdm>=4.60",
+    "pyarrow>=15.0",
+    "numpy>=1.20",
+    "matplotlib>=3.7.0",
+]
+
+[tool.pyrefly]
+project-includes = [
+    "**/*.py*",
+    "**/*.ipynb",
+]
+
+[dependency-groups]
+dev = [
+    "pyrefly>=0.64.0",
+    "ruff>=0.15.12",
+    "types-pyyaml>=6.0",
+    "pytest>=7.0",
+]
