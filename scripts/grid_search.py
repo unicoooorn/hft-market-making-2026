@@ -82,11 +82,11 @@ def run_backtest(
         config = AvellanedaStoikovConfig(
             gamma=gamma,
             k=k,
-            volatility_window=1000,
+            volatility_window=10000,
             horizon_seconds=horizon_seconds,
             min_spread=0.0000001,
-            max_spread=0.000001,
-            tick_size=0.00000001,
+            max_spread=0.5,
+            tick_size=0.0000001,
             order_amount=order_volume,
             cancellation_threshold=cancellation_threshold,
         )
@@ -244,15 +244,15 @@ def main() -> None:
     print("Creating subset data...")
     lob_subset, trades_subset = create_subset_data(
         base_dir,
-        lob_rows=2_000_000,
-        trades_rows=30_000_000,
+        lob_rows=3_000_000,
+        trades_rows=40_000_000,
     )
 
-    gamma_values = [0.007]
-    k_values = [50_000_000, 500_000_000, 5_000_000_000]
-    order_volume_values = [50 * 1e8, 500 * 1e8, 1000 * 1e8, 2000 * 1e8]
+    gamma_values = [0.0000001, 0.000001, 0.00001, 0.0001, 0.0003, 0.0007, 0.001, 0.01, 0.05, 0.08, 0.2]
+    k_values = [0.045985]
+    order_volume_values = [500 * 1e8]
     cancellation_threshold_values = [0.1]
-    horizon_seconds_values = [27]
+    horizon_seconds_values = [0.5]
 
     results = grid_search(
         lob_path=lob_subset,

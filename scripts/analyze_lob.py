@@ -51,6 +51,15 @@ def analyze_lob(csv_path: Path, sample_size: int = 100_000) -> None:
 
     print(f"Loaded {len(timestamps):,} rows")
 
+    # Calculate tick size (most common non-zero price change)
+    bid_diffs = np.diff(bid_price)
+    ask_diffs = np.diff(ask_price)
+    all_diffs = np.concatenate([bid_diffs, ask_diffs])
+    nonzero_diffs = np.abs(all_diffs[all_diffs != 0])
+    rounded = np.round(nonzero_diffs, 10)
+    unique_ticks, counts = np.unique(rounded, return_counts=True)
+    tick_size = unique_ticks[np.argmax(counts)] if len(unique_ticks) > 0 else 0.0
+
     # Calculate statistics
     spread = ask_price - bid_price
     mid_price = (bid_price + ask_price) / 2
@@ -140,6 +149,7 @@ def analyze_lob(csv_path: Path, sample_size: int = 100_000) -> None:
     print("SUMMARY STATISTICS")
     print("=" * 70)
     print(f"\nPrice Statistics:")
+    print(f"  Tick Size - {tick_size:.8f}")
     print(f"  Best Bid  - Min: {bid_price.min():.8f}, Max: {bid_price.max():.8f}, Mean: {bid_price.mean():.8f}")
     print(f"  Best Ask  - Min: {ask_price.min():.8f}, Max: {ask_price.max():.8f}, Mean: {ask_price.mean():.8f}")
     print(f"  Mid Price - Min: {mid_price.min():.8f}, Max: {mid_price.max():.8f}, Mean: {mid_price.mean():.8f}")

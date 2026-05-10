@@ -43,53 +43,55 @@ class Quote:
 
 
 class VolatilityEstimator:
-    """Rolling volatility estimator using variance rate (square root of variance)."""
+    """Rolling volatility estimator using incremental variance calculation."""
 
     def __init__(self, window_size: int) -> None:
         self._window_size = window_size
         self._prices: deque[float] = deque(maxlen=window_size)
         self._timestamps: deque[TimestampUs] = deque(maxlen=window_size)
+        self._first_timestamp: TimestampUs | None = None
+        self._last_timestamp: TimestampUs | None = None
 
     def update(self, mid_price: float, timestamp_us: TimestampUs) -> None:
         """Update estimator with new mid price."""
         self._prices.append(mid_price)
         self._timestamps.append(timestamp_us)
+        
+        if self._first_timestamp is None:
+            self._first_timestamp = timestamp_us
+        self._last_timestamp = timestamp_us
 
     def volatility(self) -> float | None:
         """
         Estimate annualized volatility from rolling window.
-
+        
         Returns variance rate (sqrt of variance), annualized.
         Returns None if insufficient data.
         """
         if len(self._prices) < 2:
             return None
 
-        prices = list(self._prices)
-        timestamps = list(self._timestamps)
-
+        # Use numpy for fast vectorized calculation
+        import numpy as np
+        prices = np.fromiter(self._prices, dtype=float)
+        
         # Calculate price changes (not log returns)
-        price_changes = []
-        for i in range(1, len(prices)):
-            if prices[i - 1] > 0:
-                change = (prices[i] - prices[i - 1]) / prices[i - 1]
-                price_changes.append(change)
-
+        price_changes = np.diff(prices) / prices[:-1]
+        
         if len(price_changes) < 2:
             return None
-
-        # Variance rate: sqrt of variance of price changes
-        mean_change = sum(price_changes) / len(price_changes)
-        variance = sum((r - mean_change) ** 2 for r in price_changes) / (len(price_changes) - 1)
-        vol = math.sqrt(variance)
-
+        
+        # Fast variance calculation using numpy
+        vol = float(np.std(price_changes, ddof=1))
+        
         # Annualize based on time span
-        if len(timestamps) >= 2 and timestamps[-1] > timestamps[0]:
-            time_span_seconds = (timestamps[-1] - timestamps[0]) / 1_000_000
-            if time_span_seconds > 0:
-                seconds_per_year = 365 * 24 * 3600
-                vol *= math.sqrt(seconds_per_year / time_span_seconds)
-
+        if self._first_timestamp is not None and self._last_timestamp is not None:
+            if self._last_timestamp > self._first_timestamp:
+                time_span_seconds = (self._last_timestamp - self._first_timestamp) / 1_000_000
+                if time_span_seconds > 0:
+                    seconds_per_year = 365 * 24 * 3600
+                    vol *= math.sqrt(seconds_per_year / time_span_seconds)
+        
         return vol
 
 
@@ -124,27 +126,39 @@ class QuoteCalculator:
         risk_adjustment = inventory_scaled * self._config.gamma * (volatility ** 2) * tau
         return mid_price - risk_adjustment
 
-    def optimal_spread(self, volatility: float, tau: float) -> float:
+    def optimal_spread(self, mid_price: float, volatility: float, tau: float) -> float:
         """
         Calculate optimal half-spread using AS formula.
 
         delta = (1/gamma) * ln(1 + gamma/k) + 0.5 * gamma * sigma^2 * tau
 
+        Note: k is calibrated in tick units (decay per tick distance).
+        Convert k to price units: k_price = k_tick / tick_size
+
         Args:
+            mid_price: Current mid price (S)
             volatility: Annualized volatility (sigma)
             tau: Time horizon in years
 
         Returns:
-            Optimal half-spread
+            Optimal half-spread (in price units)
         """
         gamma = self._config.gamma
-        k = self._config.k
+        tick_size = self._config.tick_size
+        k_tick = self._config.k
 
-        if k <= 0:
-            k = 0.001
+        if k_tick <= 0:
+            k_tick = 0.001
 
-        term1 = (1 / gamma) * math.log(1 + gamma / k)
-        term2 = 0.5 * gamma * (volatility ** 2) * tau
+        # Convert k from tick units to price units
+        # Since δ_price = δ_tick * tick_size, we need k_price = k_tick / tick_size
+        k_price = k_tick / tick_size
+
+        # First term: inventory risk adjustment (in price units)
+        term1 = (1 / gamma) * math.log(1 + gamma / k_price)
+        
+        # Second term: volatility risk adjustment (in price units)
+        term2 = 0.5 * gamma * (volatility ** 2) * tau * mid_price
 
         return term1 + term2
 
@@ -168,7 +182,7 @@ class QuoteCalculator:
             Tuple of (bid_price, ask_price)
         """
         r = self.reservation_price(mid_price, inventory, volatility, tau)
-        delta = self.optimal_spread(volatility, tau)
+        delta = self.optimal_spread(mid_price, volatility, tau)
 
         bid = r - delta
         ask = r + delta
@@ -255,6 +269,9 @@ class AvellanedaStoikovStrategy(Strategy):
         self._last_timestamp: TimestampUs | None = None
         self._orders_placed: bool = False
         self._placement_mid_price: float | None = None
+        self._order_counter = 0
+        self._last_bid: float = 0.0
+        self._last_ask: float = 0.0
 
     def on_order_book_snapshot(
         self,
@@ -308,28 +325,40 @@ class AvellanedaStoikovStrategy(Strategy):
         bid_scaled_int = int(bid_scaled * SCALE)
         ask_scaled_int = int(ask_scaled * SCALE)
 
-        now = datetime.now()
+        # Skip if quotes haven't changed (avoid unnecessary order updates)
+        tick = self._config.tick_size
+        if (abs(bid_scaled_int - self._last_bid) < tick and 
+            abs(ask_scaled_int - self._last_ask) < tick):
+            return []
+        
+        self._last_bid = bid_scaled_int
+        self._last_ask = ask_scaled_int
+
+        # Use incrementing counter for fast order ID generation
+        self._order_counter += 1
+        base_id = self._order_counter * 1000000000000 + snapshot.timestamp_us
+
         intents: list[OrderIntent] = []
 
         intents.append(OrderIntent(
-            order_id=uuid4(),
+            order_id=base_id + 1,
             symbol=snapshot.symbol,
             side="buy",
             order_type="limit",
             amount=self._config.order_amount,
             limit_price=bid_scaled_int,
-            created_ts=now,
+            created_ts=snapshot.timestamp_us,
             cancel_and_replace=True,
         ))
 
         intents.append(OrderIntent(
-            order_id=uuid4(),
+            order_id=base_id + 2,
             symbol=snapshot.symbol,
             side="sell",
             order_type="limit",
             amount=self._config.order_amount,
             limit_price=ask_scaled_int,
-            created_ts=now,
+            created_ts=snapshot.timestamp_us,
             cancel_and_replace=True,
         ))
 
